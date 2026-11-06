@@ -161,6 +161,43 @@ public final class SiteConfig {
     public static final String PAUSE_TOGGLE_SELECTOR = "button.bg-white.text-black";
 
     // ------------------------------------------------------------------
+    // Direct-embed mode + stuck-media fallback (harness extension)
+    //
+    // The details page plays in a cross-origin iframe
+    // (player.vidqueen.st), whose controls page JS cannot drive. When
+    // the harness spots that iframe it navigates the WebView straight
+    // to the iframe's URL; every control then lives in the top document.
+    // A watchdog ticks the embed's own loading state ("Try another
+    // server" + video progress) and cycles servers if it is stuck, and
+    // unmutes once playback starts (embed players start muted to
+    // satisfy autoplay policies). Null = disabled.
+    // ------------------------------------------------------------------
+
+    /** Substring matched against the current URL for "is the embed page?". */
+    public static final String DIRECT_EMBED_HOST = "player.vidqueen.st";
+
+    /** Iframe host fragment looked for on the details page. */
+    public static final String EMBED_IFRAME_HOST = DIRECT_EMBED_HOST;
+
+    /** Play/pause control on the direct embed page. */
+    public static final String EMBED_PLAY_SELECTOR = "button[title='Play / pause']";
+
+    /** "Try another server" button; visible while the load is stuck. */
+    public static final String STALL_FALLBACK_SELECTOR = ".vl-load-alt";
+
+    /** First stall click after this long (ms) with no video progress. */
+    public static final long STALL_FIRST_TIMEOUT_MS = 20000L;
+
+    /** Delay between automatic server switches (ms). */
+    public static final long STALL_RETRY_MS = 12000L;
+
+    /** Automatic server switches per page load. */
+    public static final int STALL_MAX_CLICKS = 10;
+
+    /** Volume (mute/unmute) control on the embed page. */
+    public static final String SOUND_CONTROL_SELECTOR = "button.volume-icon";
+
+    // ------------------------------------------------------------------
     // Host allowlists (also feed AdBlocker)
     // ------------------------------------------------------------------
 
@@ -175,6 +212,11 @@ public final class SiteConfig {
             "api.themoviedb.org", "image.tmdb.org",
             "player.vidqueen.st",
             "www.youtube.com", "i.ytimg.com"
+    };
+
+    /** Extra never-blocked hosts (media API + subtitle thumbnails). */
+    public static final String[] FIRST_PARTY_MEDIA_HOSTS = {
+            "api.vidqueen.st", "eruzei.com"
     };
 
     /**

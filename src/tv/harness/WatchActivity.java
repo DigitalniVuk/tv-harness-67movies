@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -78,6 +79,17 @@ public final class WatchActivity extends Activity {
     private final Runnable hideControlsRunnable = this::hideOsd;
     private boolean osdVisible = true;
     private boolean episodeSheetVisible = false;
+
+    // Direct-embed navigation + stuck-media watchdog (see SiteConfig).
+    private final Handler pollHandler = new Handler(Looper.getMainLooper());
+    private final Runnable embedPollRunnable = this::pollForEmbed;
+    private final Runnable stallRunnable = this::stallTick;
+    private boolean directNavigated;
+    private int embedPollTries;
+    private long stallSince = -1;
+    private int stallAttempts;
+    private boolean stallExhaustedNotified;
+    private boolean autoUnmuted;
     private final List<EpisodeInfo> loadedEpisodes = new ArrayList<>();
     private String currentEpisodeNum = "";
 
@@ -195,6 +207,12 @@ public final class WatchActivity extends Activity {
         }
         autoplayButton = square("AUTO PLAY\n…", this::toggleAutoplay);
         controls.addView(autoplayButton, controlParams());
+        if (!SiteConfig.STALL_FALLBACK_SELECTOR.isEmpty()) {
+            controls.addView(square("⟳\nSERVER", this::tryServer), controlParams());
+        }
+        if (!SiteConfig.SOUND_CONTROL_SELECTOR.isEmpty()) {
+            controls.addView(square("🔊\nSOUND", this::toggleSound), controlParams());
+        }
 
         rootOverlay.addView(controls, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(86), Gravity.BOTTOM));
@@ -512,6 +530,21 @@ public final class WatchActivity extends Activity {
                 view.evaluateJavascript(playerPageScript(), null);
                 updateAutoplayState();
                 fetchEpisodesFromPage();
+                if (!url.contains(SiteConfig.DIRECT_EMBED_HOST)) {
+                    // Back on the wrapper page (e.g. after BACK): allow a
+                    // fresh direct-nav the next time Play is pressed.
+                    if (url.startsWith(SiteConfig.BASE_URL)) directNavigated = false;
+                    armEmbedPoller();
+                } else {
+                    // Just landed on the embed page: watch its loading
+                    // state and auto-cycle servers if it hangs.
+                    stallSince = SystemClock.elapsedRealtime();
+                    stallAttempts = 0;
+                    stallExhaustedNotified = false;
+                    autoUnmuted = false;
+                    pollHandler.removeCallbacks(stallRunnable);
+                    pollHandler.postDelayed(stallRunnable, 2000);
+                }
             }
 
             @Override
@@ -619,6 +652,12 @@ public final class WatchActivity extends Activity {
     }
 
     private void togglePause() {
+        // On the direct embed page, use its own play/pause control.
+        if (isDirectEmbed() && !SiteConfig.EMBED_PLAY_SELECTOR.isEmpty()) {
+            web.evaluateJavascript("(function(){var e=document.querySelector("
+                    + jsQuote(SiteConfig.EMBED_PLAY_SELECTOR) + ");if(e){e.click();return true;}return false;})()", null);
+            return;
+        }
         // Prefer the site's own pause control; otherwise bridge Space to
         // the player (many sites listen for it on the watch page).
         String selector = SiteConfig.PAUSE_TOGGLE_SELECTOR;
@@ -631,6 +670,127 @@ public final class WatchActivity extends Activity {
                 + "e.initEvent('keydown',true,true);Object.defineProperty(e,'keyCode',{get:function(){return 32;}});"
                 + "Object.defineProperty(e,'which',{get:function(){return 32;}});window.dispatchEvent(e);return true;})()",
                 null);
+    }
+
+    /** Manual server switch (same action the watchdog takes automatically). */
+    private void tryServer() {
+        if (SiteConfig.STALL_FALLBACK_SELECTOR.isEmpty()) {
+            Toast.makeText(this, "Server switching not available for this site", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, "Switching server…", Toast.LENGTH_SHORT).show();
+        pageClick(SiteConfig.STALL_FALLBACK_SELECTOR);
+        stallSince = SystemClock.elapsedRealtime();
+    }
+
+    /** Manual mute/unmute toggle of the embed player. */
+    private void toggleSound() {
+        if (SiteConfig.SOUND_CONTROL_SELECTOR.isEmpty()) {
+            Toast.makeText(this, "Sound control not available for this site", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        web.evaluateJavascript("(function(){var e=document.querySelector(" + jsQuote(SiteConfig.SOUND_CONTROL_SELECTOR)
+                + ");if(e){e.click();return true;}return false;})()", null);
+    }
+
+    private boolean isDirectEmbed() {
+        if (web == null || web.getUrl() == null || SiteConfig.DIRECT_EMBED_HOST.isEmpty()) return false;
+        return web.getUrl().contains(SiteConfig.DIRECT_EMBED_HOST);
+    }
+
+    /**
+     * While on the wrapper page, poll for the embed iframe and open its
+     * URL directly so the player chrome lives in this document (a
+     * cross-origin iframe cannot be driven by page JS otherwise).
+     */
+    private void armEmbedPoller() {
+        if (SiteConfig.DIRECT_EMBED_HOST.isEmpty() || directNavigated) return;
+        embedPollTries = 0;
+        pollHandler.removeCallbacks(embedPollRunnable);
+        pollHandler.postDelayed(embedPollRunnable, 1000);
+    }
+
+    private void pollForEmbed() {
+        if (directNavigated || web == null) return;
+        if (++embedPollTries > 120) return; // ~2 min give-up
+        String host = SiteConfig.DIRECT_EMBED_HOST;
+        String js = "(function(){var fs=document.querySelectorAll('iframe');"
+                + "for(var i=0;i<fs.length;i++){var s=fs[i].src||'';"
+                + "if(s.indexOf(" + jsQuote(host) + ")>=0)return s;}return '';})()";
+        web.evaluateJavascript(js, value -> {
+            if (directNavigated || web == null) return;
+            if (value == null || "''".equals(value) || "null".equals(value)) {
+                pollHandler.postDelayed(embedPollRunnable, 1000);
+                return;
+            }
+            // Unquote the JSON string the WebView returns.
+            String src = "";
+            try {
+                src = new JSONObject("{data:" + value + "}").getString("data");
+            } catch (Exception ignored) {
+            }
+            if (src.isEmpty() || src.equals(web.getUrl())) {
+                pollHandler.postDelayed(embedPollRunnable, 1000);
+                return;
+            }
+            directNavigated = true;
+            Toast.makeText(this, "Opening player…", Toast.LENGTH_SHORT).show();
+            web.loadUrl(src);
+        });
+    }
+
+    /**
+     * Stuck-media watchdog: while the embed page has made no video
+     * progress and its "try another server" control is offered, click
+     * it (cycle server) a bounded number of times. When playback does
+     * start muted, unmute once automatically.
+     */
+    private void stallTick() {
+        if (web == null) return;
+        if (!isDirectEmbed()) return; // user navigated away (e.g. BACK)
+        String js = "(function(){var v=document.querySelector('video');"
+                + "var started=!!(v&&(v.currentTime>0.2));"
+                + "var muted=!!(v&&v.muted);"
+                + "var fb=document.querySelector(" + jsQuote(SiteConfig.STALL_FALLBACK_SELECTOR) + ");"
+                + "var fbOn=!!(fb&&fb.classList.contains('is-on')&&fb.getAttribute('aria-hidden')!=='true');"
+                + "return JSON.stringify({started:started,muted:muted,fbOn:fbOn});})()";
+        web.evaluateJavascript(js, value -> {
+            if (web == null || !isDirectEmbed()) return;
+            boolean started = false, muted = false, fbOn = false;
+            try {
+                String unquoted = new JSONObject("{data:" + value + "}").getString("data");
+                JSONObject state = new JSONObject(unquoted);
+                started = state.optBoolean("started", false);
+                muted = state.optBoolean("muted", false);
+                fbOn = state.optBoolean("fbOn", false);
+            } catch (Exception ignored) {
+            }
+            long now = SystemClock.elapsedRealtime();
+            if (started) {
+                stallSince = -1;
+                if (muted && !SiteConfig.SOUND_CONTROL_SELECTOR.isEmpty() && !autoUnmuted) {
+                    autoUnmuted = true;
+                    web.evaluateJavascript("(function(){var e=document.querySelector(" + jsQuote(SiteConfig.SOUND_CONTROL_SELECTOR)
+                            + ");if(e){e.click();}return true;})()", null);
+                    Toast.makeText(this, "Sound on", Toast.LENGTH_SHORT).show();
+                }
+            } else {
+                if (stallSince < 0) stallSince = now;
+                long idleMs = now - stallSince;
+                long neededMs = stallAttempts == 0 ? SiteConfig.STALL_FIRST_TIMEOUT_MS : SiteConfig.STALL_RETRY_MS;
+                if (fbOn && idleMs >= neededMs && stallAttempts < SiteConfig.STALL_MAX_CLICKS) {
+                    stallAttempts++;
+                    stallSince = now;
+                    web.evaluateJavascript("(function(){var e=document.querySelector(" + jsQuote(SiteConfig.STALL_FALLBACK_SELECTOR)
+                            + ");if(e){e.click();}return true;})()", null);
+                    Toast.makeText(this, "Trying another server (" + stallAttempts + "/" + SiteConfig.STALL_MAX_CLICKS + ")", Toast.LENGTH_SHORT).show();
+                } else if (stallAttempts >= SiteConfig.STALL_MAX_CLICKS && !stallExhaustedNotified) {
+                    stallExhaustedNotified = true;
+                    Toast.makeText(this, "No working server found — check the site or your connection", Toast.LENGTH_LONG).show();
+                }
+            }
+            pollHandler.postDelayed(stallRunnable, 2000);
+        });
     }
 
     /** Builds the page-customisation script from SiteConfig player selectors. */
@@ -819,6 +979,8 @@ public final class WatchActivity extends Activity {
     @Override
     protected void onDestroy() {
         hideHandler.removeCallbacks(hideControlsRunnable);
+        pollHandler.removeCallbacks(embedPollRunnable);
+        pollHandler.removeCallbacks(stallRunnable);
         if (web != null) {
             web.stopLoading();
             web.loadUrl("about:blank");

@@ -198,3 +198,30 @@ code where noted). Site-fork fixes are described in `INVESTIGATION.md`.
 - **[→ main] Process note:** agents working in a fork dir must resolve
   **absolute paths** before writing. Cheap check after every fork
   edit: `git -C <main> status` must be clean.
+
+## I-15. Stuck-at-starting fallback + muted-by-default player
+
+- **Symptom:** movies sat on the embed's loading screen forever
+  ("Fetching media / Trying", black video). And playback started muted
+  with no remote-reachable unmute control.
+- **Cause:** (1) the embed server has no source *for this network*
+  (see I-13 — confirmed as a datacenter/VPN detection: the embed even
+  shows "A VPN or proxy can block this player or make it slow" when
+  its `/vphint` check flags the IP; the *TV's* residential network
+  gets served, the test desktop does not). (2) cross-origin iframe —
+  page JS cannot drive controls inside it, so neither the site's nor
+  harness's "try another" toggle was clickable by a remote. (3)
+  embed players start muted to satisfy autoplay policies.
+- **Resolution (fork):** the harness now navigates the WebView
+  straight to the embed URL (reads `iframe.src` — allowed
+  cross-origin — when the iframe loads), making every player control
+  same-document. A watchdog (every 2 s) cycles servers via the
+  "Try another server" control while the video makes no progress
+  (20 s first stall, then every 12 s, max 10, with toasts), and
+  auto-unmutes once playback starts. OSD gained SERVER + SOUND
+  buttons for manual control. `api.vidqueen.st` / `eruzei.com` added
+  to `FIRST_PARTY_HOSTS` (media API + subtitle thumbnails).
+- **[→ main] Pattern (document, not code):** for cross-origin-embed
+  sites, "open the iframe URL directly in the WebView" + poll-based
+  watchdog is the reusable trick. If the media API is geo-gated for
+  the *test* network but works on the user's, verify via the TV.

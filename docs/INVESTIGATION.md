@@ -95,8 +95,9 @@ network inspection, and `_next` chunk inspection. Dates: 2026-11-06.
 
 - Catalogue: works (all 6 rails, 221 titles, posters, details text).
 - Details modal: works; Play via OSD works (I-11 workaround).
-- Video frames: **not verified** — `api.vidqueen.st` returns
-  `source:null` from this network (I-13); the embed UI loads and is
-  correctly wired, but the media server serves nothing here. Re-test
-  video playback from a network the server serves.
+- Video frames: **verified playing on the Fire TV** (residential
+  network; the test desktop is flagged datacenter by the player's
+  `/vphint` check, I-13). Direct-embed navigation + watchdog (I-15)
+  are on. Audio starts via embed autoplay + auto-unmute once playing;
+  the OSD SOUND button toggles manually.
 - TV seasons: limitation (I-8) — Play starts S1E1/resume.
