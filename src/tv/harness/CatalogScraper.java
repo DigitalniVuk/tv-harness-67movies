@@ -2,6 +2,9 @@ package tv.harness;
 
 import android.text.Html;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -19,6 +22,14 @@ import java.util.regex.Pattern;
  * Fetches only the site's HTML catalogue pages; it never runs the site's
  * scripts. All site-specific values come from {@link SiteConfig};
  * this class is site-agnostic and must not gain any.
+ *
+ * <p>Fork extension (site-specific, see docs/ISSUES.md): when the
+ * requested path contains a {@code ?rail=<key>} query value, the page is
+ * parsed as Next.js React Server Component JSON instead of HTML div
+ * blocks (this site renders its catalogue rows client-side from that
+ * payload). The rail key is a SiteConfig datum, so the JSON mode itself
+ * stays site-agnostic and is a candidate to upstream as a general
+ * {@code ITEM_FORMAT} mode.
  */
 final class CatalogScraper {
     private static final Pattern DIV = Pattern.compile("(?is)<(/?)div\\b([^>]*)>");
@@ -40,6 +51,7 @@ final class CatalogScraper {
 
     /** Fetches and parses one listing page (SiteConfig tab or category path). */
     static List<CatalogItem> fetchItems(String path) throws Exception {
+        if (railKey(path) != null) return fetchJsonItems(path);
         String html = fetchHtml(path);
         List<CatalogItem> items = new ArrayList<>();
         for (String block : itemBlocks(html)) {
@@ -47,6 +59,107 @@ final class CatalogScraper {
             if (item != null) items.add(item);
         }
         return items;
+    }
+
+    /** Returns the {@code rail} query value of a tab path, or null. */
+    private static String railKey(String path) {
+        int i = path.indexOf("rail=");
+        if (i < 0) return null;
+        String value = path.substring(i + 5).split("[&/#?]", 2)[0];
+        return value.isEmpty() ? null : value;
+    }
+
+    /**
+     * JSON (RSC) mode: find the rail's "items":[...] array in the page's
+     * double-escaped flight payload and parse it. Item watch URL is
+     * {@code /details/{movie|tv}/{id}}; posters are TMDB w500.
+     *
+     * <p>Unescape order matters (see docs/ISSUES.md I-2): the payload
+     * encodes both backslash and quote, so {@code \\} must be decoded
+     * before {@code \"}, via a NUL placeholder that cannot occur in
+     * the payload.
+     */
+    private static List<CatalogItem> fetchJsonItems(String path) throws Exception {
+        String html = fetchHtml(path);
+        String u = html.replace("\\\\", "\u0000").replace("\\\"", "\"").replace("\u0000", "\\");
+        int key = u.indexOf("\"key\":\"" + railKey(path) + "\"");
+        if (key < 0) return java.util.Collections.emptyList();
+        int arrayStart = u.indexOf("\"items\":[", key);
+        if (arrayStart < 0) return java.util.Collections.emptyList();
+        arrayStart += "\"items\":".length();
+        int arrayEnd = arrayEnd(u, arrayStart);
+        if (arrayEnd < 0) return java.util.Collections.emptyList();
+
+        JSONArray array;
+        try {
+            array = new JSONArray(u.substring(arrayStart, arrayEnd));
+        } catch (Exception e) {
+            return java.util.Collections.emptyList();
+        }
+        List<CatalogItem> items = new ArrayList<>();
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject o = array.optJSONObject(i);
+            if (o == null) continue;
+            long id = o.optLong("id", -1);
+            if (id <= 0) continue;
+            String type = o.optString("type", o.optString("media_type", "movie"));
+            if ("tv".equals(type)) type = "tv";
+            else type = "movie";
+            String title = o.optString("title", o.optString("name", ""));
+            if (title.isEmpty()) continue;
+            String poster = null;
+            String posterPath = o.optString("poster_path", "");
+            if (!posterPath.isEmpty()) {
+                poster = "https://image.tmdb.org/t/p/w500" + posterPath;
+            }
+            StringBuilder details = new StringBuilder();
+            String date = o.optString("release_date", o.optString("first_air_date", ""));
+            if (date.length() >= 4) details.append(date.substring(0, 4));
+            if (o.has("vote_average")) {
+                if (details.length() > 0) details.append("  \u00b7  ");
+                details.append(String.format(Locale.US, "\u2605 %.1f", o.optDouble("vote_average", 0)));
+            }
+            JSONArray genres = o.optJSONArray("genres");
+            if (genres != null) {
+                StringBuilder names = new StringBuilder();
+                for (int g = 0; g < genres.length(); g++) {
+                    String name = genres.optJSONObject(g) == null
+                            ? "" : genres.optJSONObject(g).optString("name", "");
+                    if (name.isEmpty()) continue;
+                    if (names.length() > 0) names.append(", ");
+                    names.append(name);
+                }
+                if (names.length() > 0) {
+                    if (details.length() > 0) details.append("  \u00b7  ");
+                    details.append(names);
+                }
+            }
+            if (details.length() == 0) details.append("movie".equals(type) ? "Movie" : "TV Show");
+            String watchUrl = SiteConfig.BASE_URL + "/details/" + type + "/" + id;
+            items.add(new CatalogItem(title, watchUrl, poster, details.toString()));
+        }
+        return items;
+    }
+
+    /**
+     * Returns the index just past the bracket matching the {@code [} at
+     * {@code start}, ignoring brackets inside JSON strings. Handles
+     * backslash escapes so an escaped quote does not end a string.
+     */
+    private static int arrayEnd(String text, int start) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (escaped) { escaped = false; continue; }
+            if (c == '\\') { escaped = true; continue; }
+            if (c == '"') { inString = !inString; continue; }
+            if (inString) continue;
+            if (c == '[') depth++;
+            else if (c == ']' && --depth == 0) return i + 1;
+        }
+        return -1;
     }
 
     /** Discovers category links on the site's discovery page. */

@@ -1,13 +1,24 @@
-# TV Harness
+# TV Harness — 67movies.st fork
 
 A generic Android TV harness that turns any server-rendered website into a
 remote-friendly TV app. The catalogue screen is native (no site scripts run);
 the site is opened in a WebView only for the playback/player screen.
 
-The harness ships with **no site baked in**. Every site-specific value
-(endpoints, HTML selectors, player hooks, host allowlists) lives in one
-file, `src/tv/harness/SiteConfig.java`. An agent points the app at a new
-website by editing only that file, following `docs/AGENT_GUIDE.md`.
+This is a **site fork** of [tv-harness](https://github.com/DigitalniVuk/tv-harness)
+for **67movies.st**. Everything site-specific lives in
+`src/tv/harness/SiteConfig.java` (plus an RSC JSON mode in
+`CatalogScraper` — this Next.js site renders its catalogue rows from
+embedded React Server Component JSON, not HTML cards).
+
+**Status (2026-11-06, tested on a Fire TV AFTSS):** catalogue (221 titles
+across 6 rails), details modal, and Play-to-embed all work. Video frames
+depend on the VidQueen media server serving this network — it currently
+returns `source:null` here (see `docs/ISSUES.md` I-13). TV season
+switching is not remote-controllable (I-8).
+
+Start with `docs/INVESTIGATION.md` (what the site is) and
+`docs/ISSUES.md` (every issue found + how it was resolved). All generic
+learnings are marked to flow back to the main `tv-harness` repo.
 
 ## Features
 
@@ -60,7 +71,7 @@ the installed app and its data.
 
 ## Project layout
 
-- `src/tv/harness/SiteConfig.java` — **the only site-specific file.**
+- `src/tv/harness/SiteConfig.java` — **the plug-in point.**
   Endpoints, selectors, player hooks, host allowlists. Edit this to plug in
   a website.
 - `src/tv/harness/CatalogActivity.java` — native TV catalogue, remote

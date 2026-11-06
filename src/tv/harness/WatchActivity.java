@@ -126,7 +126,9 @@ public final class WatchActivity extends Activity {
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         topBar.addView(title, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        topBar.addView(action("EPISODES", this::toggleEpisodeSheet), headerButtonParams());
+        if (!SiteConfig.EPISODE_LIST_SELECTOR.isEmpty()) {
+            topBar.addView(action("EPISODES", this::toggleEpisodeSheet), headerButtonParams());
+        }
         topBar.addView(action("RELOAD", () -> web.reload()), headerButtonParams());
         topBar.addView(action("BROWSE", this::finish), headerButtonParams());
         toolbar.addView(topBar, new LinearLayout.LayoutParams(
@@ -188,7 +190,9 @@ public final class WatchActivity extends Activity {
         controls.addView(square("Ⅱ\nPAUSE / PLAY", this::togglePause), controlParams());
         controls.addView(square("◀\nPREV", () -> pageClick(SiteConfig.PREV_EPISODE_SELECTOR)), controlParams());
         controls.addView(square("▶\nNEXT", () -> pageClick(SiteConfig.NEXT_EPISODE_SELECTOR)), controlParams());
-        controls.addView(square("≡\nEPISODES", this::toggleEpisodeSheet), controlParams());
+        if (!SiteConfig.EPISODE_LIST_SELECTOR.isEmpty()) {
+            controls.addView(square("≡\nEPISODES", this::toggleEpisodeSheet), controlParams());
+        }
         autoplayButton = square("AUTO PLAY\n…", this::toggleAutoplay);
         controls.addView(autoplayButton, controlParams());
 
@@ -303,6 +307,10 @@ public final class WatchActivity extends Activity {
     }
 
     private void toggleEpisodeSheet() {
+        if (SiteConfig.EPISODE_LIST_SELECTOR.isEmpty()) {
+            Toast.makeText(this, "Episodes not available for this site", Toast.LENGTH_SHORT).show();
+            return;
+        }
         episodeSheetVisible = !episodeSheetVisible;
         if (episodeSheetVisible) {
             showOsd();
@@ -345,6 +353,7 @@ public final class WatchActivity extends Activity {
 
     private void fetchEpisodesFromPage() {
         if (web == null) return;
+        if (SiteConfig.EPISODE_LIST_SELECTOR.isEmpty()) return;
         String js = "(function(){"
                 + "var eps=[];"
                 + "var active=document.querySelector(" + jsQuote(SiteConfig.EPISODE_ACTIVE_SELECTOR) + ");"
@@ -566,6 +575,10 @@ public final class WatchActivity extends Activity {
     }
 
     private void pageClick(String selector) {
+        if (selector == null || selector.isEmpty()) {
+            Toast.makeText(this, "That control is not available for this site", Toast.LENGTH_SHORT).show();
+            return;
+        }
         String js = "(function(){var e=document.querySelector(" + jsQuote(selector)
                 + ");if(e){e.click();return true;}return false;})()";
         web.evaluateJavascript(js, value -> {
@@ -652,13 +665,18 @@ public final class WatchActivity extends Activity {
                 + "var s=document.getElementById('tv-player-style');if(!s){s=document.createElement('style');"
                 + "s.id='tv-player-style';(document.head||document.documentElement).appendChild(s);}s.textContent=css;"
                 + "try{window.open=function(){return null};window.alert=function(){};}catch(e){}"
+                // Keep watching for the focus target: SPA details pages
+                // render long after onPageFinished (client-side data
+                // fetch), so a short timeout misses the Play button.
+                // Safety cap ~4 min.
                 + "if(!window.__tvFocusWatch){window.__tvFocusWatch=1;var n=0;var t=setInterval(function(){"
                 + "var p=" + (focus.isEmpty() ? "null" : "document.querySelector(" + jsQuote(focus) + ")") + ";"
                 + "if(p&&getComputedStyle(p).display!=='none'){"
+                + "if(p.scrollIntoView)p.scrollIntoView({block:'center'});"
                 + "p.setAttribute('tabindex','0');p.focus();clearInterval(t);}else{"
                 + "p=document.querySelector(" + jsQuote(frame.isEmpty() ? "iframe, video" : frame) + ");"
                 + "if(p){p.setAttribute('tabindex','0');"
-                + "p.focus();clearInterval(t);}}if(++n>30)clearInterval(t);},500);}"
+                + "p.focus();clearInterval(t);}}if(++n>480)clearInterval(t);},500);}"
                 + "})();";
     }
 
