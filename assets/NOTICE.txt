@@ -1,0 +1,9 @@
+Ad filtering data
+
+The bundled domain rules were extracted from EasyList, the community-maintained
+advertising filter list. The app uses only domain-level rules and a small subset
+of URL-path checks; it does not implement the full EasyList/Adblock Plus syntax.
+
+Source: https://easylist.to/easylist/easylist.txt
+Snapshot date: 2026-11-01
+Project overview: https://easylist.to/

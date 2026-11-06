@@ -1,0 +1,14 @@
+# Local build output and signing artifacts
+/build/
+*.apk
+*.aab
+*.idsig
+*.keystore
+*.jks
+
+# Local machine/editor files
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
